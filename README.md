@@ -50,6 +50,14 @@ python line_daily_sender.py
 - `PORT` でWebhookサーバーを待ち受け
 - 起動時にリッチメニュー（`メニュー / 一覧 / 価格`）を自動作成・デフォルト適用
 
+### Render本番起動（推奨）
+
+Renderでは `Start Command` を以下にしてください。
+
+```bash
+gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT --factory line_daily_sender:create_app_for_gunicorn
+```
+
 ## 4. LINE Webhook設定
 
 1. 公開URL（例: RenderのURL）を用意

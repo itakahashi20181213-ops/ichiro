@@ -3,3 +3,4 @@ python-dotenv
 flask
 beautifulsoup4
 pillow
+gunicorn

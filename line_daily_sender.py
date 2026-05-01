@@ -24,6 +24,8 @@ LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 PRODUCT_FILE_PATH = Path("products.json")
 LINE_RICHMENU_LIST_URL = "https://api.line.me/v2/bot/richmenu/list"
 LINE_RICHMENU_CREATE_URL = "https://api.line.me/v2/bot/richmenu"
+_BACKGROUND_STARTED = False
+_BACKGROUND_LOCK = threading.Lock()
 
 
 @dataclass
@@ -568,9 +570,13 @@ def ensure_product_file() -> None:
     save_products([])
 
 
-def main() -> None:
-    try:
-        settings = load_settings()
+def start_background_services(settings: Settings) -> None:
+    global _BACKGROUND_STARTED
+
+    with _BACKGROUND_LOCK:
+        if _BACKGROUND_STARTED:
+            return
+
         setup_rich_menu(settings)
         ensure_product_file()
 
@@ -580,6 +586,19 @@ def main() -> None:
             daemon=True,
         )
         thread.start()
+        _BACKGROUND_STARTED = True
+
+
+def create_app_for_gunicorn() -> Flask:
+    settings = load_settings()
+    start_background_services(settings)
+    return create_app(settings)
+
+
+def main() -> None:
+    try:
+        settings = load_settings()
+        start_background_services(settings)
 
         app = create_app(settings)
         print(f"[INFO] HTTPサーバー起動 port={settings.http_port}")
