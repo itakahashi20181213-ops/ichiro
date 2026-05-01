@@ -28,7 +28,8 @@ LINE_RICHMENU_BASE_URL = "https://api.line.me/v2/bot/richmenu"
 _BACKGROUND_STARTED = False
 _BACKGROUND_LOCK = threading.Lock()
 settings_cache: Settings | None = None
-pending_actions: dict[str, str] = {}
+PENDING_ACTION_TIMEOUT_SECONDS = 180
+pending_actions: dict[str, dict[str, Any]] = {}
 
 
 @dataclass
@@ -479,6 +480,9 @@ def build_menu_message() -> str:
         "4) 削除 <番号 or 商品名>",
         "   - 自分の監視リストから商品を削除します。",
         "   - または「削除」と送信後にURLを送っても削除できます。",
+        "",
+        "5) キャンセル",
+        "   - 追加/削除の入力待ち状態を解除します。",
     ]
     return "\n".join(lines)[:4900]
 
@@ -602,9 +606,17 @@ def handle_command(text: str, owner_id: str) -> str:
     if not parts:
         return build_menu_message()
 
-    if pending_actions.get(owner_id) in {"add_waiting_url", "delete_waiting_url"}:
+    pending = pending_actions.get(owner_id)
+    if pending:
+        started_at = pending.get("started_at")
+        if isinstance(started_at, (int, float)) and (time.time() - started_at) > PENDING_ACTION_TIMEOUT_SECONDS:
+            pending_actions.pop(owner_id, None)
+            pending = None
+
+    if pending and pending.get("action") in {"add_waiting_url", "delete_waiting_url"}:
         if plain_text.startswith("http://") or plain_text.startswith("https://"):
-            action = pending_actions.pop(owner_id)
+            action = str(pending.get("action"))
+            pending_actions.pop(owner_id, None)
             if action == "add_waiting_url":
                 title = fetch_page_title(plain_text) or f"商品{len(products) + 1}"
                 products.append(
@@ -633,9 +645,18 @@ def handle_command(text: str, owner_id: str) -> str:
             user_products_map[owner_id] = products
             save_products(user_products_map)
             return f"商品を削除しました: {removed.get('name', 'no-name')}"
-        return "URL形式で送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX"
+        return (
+            "URL形式で送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX\n"
+            "入力待ちは3分で自動キャンセルされます。"
+        )
 
     cmd = parts[0]
+    if cmd in {"キャンセル", "cancel", "CANCEL", "Cancel"}:
+        if owner_id in pending_actions:
+            pending_actions.pop(owner_id, None)
+            return "入力待ちをキャンセルしました。"
+        return "キャンセルする入力待ちはありません。"
+
     if cmd in {"メニュー", "ﾒﾆｭｰ", "ヘルプ", "help", "Help", "HELP"}:
         return build_menu_message()
 
@@ -654,8 +675,14 @@ def handle_command(text: str, owner_id: str) -> str:
 
     if cmd == "追加":
         if len(parts) == 1:
-            pending_actions[owner_id] = "add_waiting_url"
-            return "追加したい商品のURLを送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX"
+            pending_actions[owner_id] = {
+                "action": "add_waiting_url",
+                "started_at": time.time(),
+            }
+            return (
+                "追加したい商品のURLを送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX\n"
+                "取り消す場合は「キャンセル」と送ってください（3分で自動キャンセル）。"
+            )
         if len(parts) < 3:
             return "使い方: 追加 商品名 URL"
 
@@ -680,8 +707,11 @@ def handle_command(text: str, owner_id: str) -> str:
 
     if cmd == "削除":
         if len(parts) == 1:
-            pending_actions[owner_id] = "delete_waiting_url"
-            return "削除したい商品のURLを送ってください。"
+            pending_actions[owner_id] = {
+                "action": "delete_waiting_url",
+                "started_at": time.time(),
+            }
+            return "削除したい商品のURLを送ってください。取り消す場合は「キャンセル」と送ってください（3分で自動キャンセル）。"
         if len(parts) < 2:
             return "使い方: 削除 <番号 or 商品名>"
         if not products:
