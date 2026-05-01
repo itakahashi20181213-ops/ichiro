@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 from io import BytesIO
@@ -361,6 +362,45 @@ def parse_price_to_int(text: str) -> int | None:
     return int(digits)
 
 
+def _extract_price_from_json_ld(soup: BeautifulSoup) -> int | None:
+    scripts = soup.select('script[type="application/ld+json"]')
+    for script in scripts:
+        raw = script.string or script.text
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        entries = data if isinstance(data, list) else [data]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            offers = entry.get("offers")
+            offer_entries = offers if isinstance(offers, list) else [offers]
+            for offer in offer_entries:
+                if not isinstance(offer, dict):
+                    continue
+                price = offer.get("price")
+                if isinstance(price, (int, float)):
+                    return int(price)
+                if isinstance(price, str):
+                    parsed = parse_price_to_int(price)
+                    if parsed is not None:
+                        return parsed
+    return None
+
+
+def _extract_price_from_meta(soup: BeautifulSoup) -> int | None:
+    meta_price = soup.select_one('meta[property="product:price:amount"]')
+    if meta_price and meta_price.get("content"):
+        parsed = parse_price_to_int(str(meta_price.get("content")))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def fetch_amazon_price(url: str) -> tuple[int | None, str]:
     headers = {
         "User-Agent": (
@@ -369,24 +409,61 @@ def fetch_amazon_price(url: str) -> tuple[int | None, str]:
         ),
         "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
     }
-    response = requests.get(url, headers=headers, timeout=20)
-    if response.status_code != 200:
-        return None, f"取得失敗(status={response.status_code})"
+    last_error = "価格要素が見つかりませんでした"
+    for attempt in range(3):
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            if response.status_code != 200:
+                last_error = f"取得失敗(status={response.status_code})"
+                time.sleep(1 + attempt)
+                continue
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    selectors = [
-        "#priceblock_dealprice",
-        "#priceblock_ourprice",
-        "#priceblock_saleprice",
-        ".a-price .a-offscreen",
-    ]
-    for selector in selectors:
-        node = soup.select_one(selector)
-        if node and node.text:
-            price = parse_price_to_int(node.text)
-            if price is not None:
-                return price, "OK"
-    return None, "価格要素が見つかりませんでした"
+            html = response.text
+            if "captcha" in html.lower() or "ご迷惑をおかけしております" in html:
+                return None, "Amazon側でアクセス制限(CAPTCHA)が発生しました"
+
+            soup = BeautifulSoup(html, "html.parser")
+            selectors = [
+                "#priceblock_dealprice",
+                "#priceblock_ourprice",
+                "#priceblock_saleprice",
+                "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
+                "#corePrice_feature_div .a-price .a-offscreen",
+                ".a-price.a-text-price .a-offscreen",
+                ".a-price .a-offscreen",
+            ]
+            for selector in selectors:
+                node = soup.select_one(selector)
+                if node and node.text:
+                    price = parse_price_to_int(node.text)
+                    if price is not None:
+                        return price, "OK"
+
+            # whole/fraction形式の価格にも対応
+            whole = soup.select_one(".a-price-whole")
+            frac = soup.select_one(".a-price-fraction")
+            if whole and whole.text:
+                whole_digits = re.sub(r"[^\d]", "", whole.text)
+                frac_digits = re.sub(r"[^\d]", "", frac.text if frac else "")
+                composed = whole_digits + (frac_digits[:2] if frac_digits else "")
+                if composed:
+                    return int(composed), "OK"
+
+            json_ld_price = _extract_price_from_json_ld(soup)
+            if json_ld_price is not None:
+                return json_ld_price, "OK(JSON-LD)"
+
+            meta_price = _extract_price_from_meta(soup)
+            if meta_price is not None:
+                return meta_price, "OK(META)"
+
+            last_error = "価格要素が見つかりませんでした"
+            time.sleep(1 + attempt)
+        except requests.RequestException as exc:
+            last_error = f"通信エラー: {exc}"
+            time.sleep(1 + attempt)
+
+    return None, last_error
 
 
 def fetch_page_title(url: str) -> str | None:
