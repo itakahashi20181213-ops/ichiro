@@ -48,7 +48,7 @@ python line_daily_sender.py
 - `MONITOR_INTERVAL_SECONDS` 間隔で `products.json` の商品を監視
 - 毎日 `SEND_TIME` に `LINE_TO` 宛てで定期レポート送信
 - `PORT` でWebhookサーバーを待ち受け
-- 起動時にリッチメニュー（`メニュー / 一覧 / 追加 / 削除`）を自動作成・デフォルト適用
+- 起動時にリッチメニュー（`メニュー / 一覧 / 追加 / 削除 / キャンセル`）を自動作成・デフォルト適用
 
 ### Render本番起動（推奨）
 

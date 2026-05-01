@@ -184,13 +184,14 @@ def _generate_rich_menu_image() -> bytes:
     draw.text((80, 60), title, fill=(255, 255, 255), font=title_font)
 
     top = 220
-    cell_w = width // 2
-    cell_h = (height - top) // 2
-    labels = [("MENU", 0, 0), ("LIST", 1, 0), ("ADD", 0, 1), ("DELETE", 1, 1)]
+    cell_w = width
+    cell_h = (height - top) // 5
+    labels = [("MENU", 0), ("LIST", 1), ("ADD", 2), ("DELETE", 3), ("CANCEL", 4)]
 
     # 5x7ブロックフォント（環境依存なし）
     glyphs: dict[str, list[str]] = {
         "A": ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+        "C": ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
         "D": ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
         "E": ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
         "I": ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
@@ -230,15 +231,15 @@ def _generate_rich_menu_image() -> bytes:
                         )
             cursor += 6 * scale
 
-    for en_label, col, row in labels:
-        x0 = col * cell_w
+    for en_label, row in labels:
+        x0 = 0
         y0 = top + row * cell_h
         x1 = x0 + cell_w
-        y1 = y0 + cell_h
-        fill = (42, 128, 196) if (col + row) % 2 == 0 else (34, 116, 180)
+        y1 = height if row == 4 else y0 + cell_h
+        fill = (42, 128, 196) if row % 2 == 0 else (34, 116, 180)
         draw.rectangle([(x0, y0), (x1, y1)], fill=fill)
         draw.rectangle([(x0, y0), (x1, y1)], outline=(255, 255, 255), width=5)
-        draw_block_text(en_label, x0, y0, cell_w, cell_h)
+        draw_block_text(en_label, x0, y0, cell_w, y1 - y0)
 
     buf = BytesIO()
     image.save(buf, format="PNG")
@@ -269,20 +270,24 @@ def setup_rich_menu(settings: Settings) -> None:
         "chatBarText": "メニュー",
         "areas": [
             {
-                "bounds": {"x": 0, "y": 220, "width": 1250, "height": 733},
+                "bounds": {"x": 0, "y": 220, "width": 2500, "height": 293},
                 "action": {"type": "message", "text": "メニュー"},
             },
             {
-                "bounds": {"x": 1250, "y": 220, "width": 1250, "height": 733},
+                "bounds": {"x": 0, "y": 513, "width": 2500, "height": 293},
                 "action": {"type": "message", "text": "一覧"},
             },
             {
-                "bounds": {"x": 0, "y": 953, "width": 1250, "height": 733},
+                "bounds": {"x": 0, "y": 806, "width": 2500, "height": 293},
                 "action": {"type": "message", "text": "追加"},
             },
             {
-                "bounds": {"x": 1250, "y": 953, "width": 1250, "height": 733},
+                "bounds": {"x": 0, "y": 1099, "width": 2500, "height": 293},
                 "action": {"type": "message", "text": "削除"},
+            },
+            {
+                "bounds": {"x": 0, "y": 1392, "width": 2500, "height": 294},
+                "action": {"type": "message", "text": "キャンセル"},
             },
         ],
     }
