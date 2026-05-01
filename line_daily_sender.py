@@ -206,20 +206,25 @@ def _generate_rich_menu_image() -> bytes:
     labels = [("メニュー", "MENU", 0, 0), ("一覧", "LIST", 1, 0), ("追加", "ADD", 0, 1), ("削除", "DELETE", 1, 1)]
 
     def draw_big_ascii_label(text: str, x0: int, y0: int, w: int, h: int) -> None:
-        base = Image.new("L", (600, 180), 0)
+        base = Image.new("L", (1000, 260), 0)
         base_draw = ImageDraw.Draw(base)
         fallback_font = ImageFont.load_default()
         bbox = base_draw.textbbox((0, 0), text, font=fallback_font)
         tw = bbox[2] - bbox[0]
         th = bbox[3] - bbox[1]
-        tx = (600 - tw) // 2
-        ty = (180 - th) // 2
+        tx = (1000 - tw) // 2
+        ty = (260 - th) // 2
         base_draw.text((tx, ty), text, fill=255, font=fallback_font)
-        # ビットマップを拡大して、フォントが無くても視認性を確保する
-        scaled = base.resize((min(w - 120, 1500), 220), Image.Resampling.NEAREST)
+        # ビットマップを大きく拡大して、フォントが無くても視認性を確保する
+        target_w = max(700, min(w - 120, 1500))
+        target_h = max(280, min(h - 180, 520))
+        scaled = base.resize((target_w, target_h), Image.Resampling.NEAREST)
         sx = x0 + (w - scaled.width) // 2
         sy = y0 + (h - scaled.height) // 2
+        # 太く見えるよう1pxずらして重ねる
         image.paste((255, 255, 255), (sx, sy), scaled)
+        image.paste((255, 255, 255), (sx + 1, sy), scaled)
+        image.paste((255, 255, 255), (sx, sy + 1), scaled)
 
     for jp_label, en_label, col, row in labels:
         x0 = col * cell_w
