@@ -24,8 +24,11 @@ LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 PRODUCT_FILE_PATH = Path("products.json")
 LINE_RICHMENU_LIST_URL = "https://api.line.me/v2/bot/richmenu/list"
 LINE_RICHMENU_CREATE_URL = "https://api.line.me/v2/bot/richmenu"
+LINE_RICHMENU_BASE_URL = "https://api.line.me/v2/bot/richmenu"
 _BACKGROUND_STARTED = False
 _BACKGROUND_LOCK = threading.Lock()
+settings_cache: Settings | None = None
+pending_actions: dict[str, str] = {}
 
 
 @dataclass
@@ -179,14 +182,18 @@ def _generate_rich_menu_image() -> bytes:
     draw.rectangle([(0, 0), (width, 220)], fill=(13, 63, 110))
     draw.text((80, 85), title, fill=(255, 255, 255), font=font)
 
-    section_height = (height - 220) // 3
-    labels = ["メニュー", "一覧", "価格"]
-    for i, label in enumerate(labels):
-        y0 = 220 + i * section_height
-        y1 = 220 + (i + 1) * section_height
-        fill = (42, 128, 196) if i % 2 == 0 else (34, 116, 180)
-        draw.rectangle([(0, y0), (width, y1)], fill=fill)
-        draw.text((120, y0 + section_height // 2 - 10), label, fill=(255, 255, 255), font=font)
+    top = 220
+    cell_w = width // 2
+    cell_h = (height - top) // 2
+    labels = [("メニュー", 0, 0), ("一覧", 1, 0), ("追加", 0, 1), ("削除", 1, 1)]
+    for label, col, row in labels:
+        x0 = col * cell_w
+        y0 = top + row * cell_h
+        x1 = x0 + cell_w
+        y1 = y0 + cell_h
+        fill = (42, 128, 196) if (col + row) % 2 == 0 else (34, 116, 180)
+        draw.rectangle([(x0, y0), (x1, y1)], fill=fill)
+        draw.text((x0 + 120, y0 + cell_h // 2 - 10), label, fill=(255, 255, 255), font=font)
 
     buf = BytesIO()
     image.save(buf, format="PNG")
@@ -205,66 +212,91 @@ def setup_rich_menu(settings: Settings) -> None:
             rich_menu_id = item.get("richMenuId")
             break
 
-    if not rich_menu_id:
-        payload = {
-            "size": {"width": 2500, "height": 1686},
-            "selected": True,
-            "name": rich_menu_name,
-            "chatBarText": "メニュー",
-            "areas": [
-                {
-                    "bounds": {"x": 0, "y": 220, "width": 2500, "height": 488},
-                    "action": {"type": "message", "text": "メニュー"},
-                },
-                {
-                    "bounds": {"x": 0, "y": 708, "width": 2500, "height": 489},
-                    "action": {"type": "message", "text": "一覧"},
-                },
-                {
-                    "bounds": {"x": 0, "y": 1197, "width": 2500, "height": 489},
-                    "action": {"type": "message", "text": "価格"},
-                },
-            ],
-        }
-        created = _line_json_request(settings, "POST", LINE_RICHMENU_CREATE_URL, payload)
-        rich_menu_id = created.get("richMenuId")
-        if not rich_menu_id:
-            raise RuntimeError("rich menu作成に失敗しました。")
+    # 仕様変更時に古いレイアウトが残らないよう、同名メニューは作り直す。
+    if rich_menu_id:
+        _line_json_request(settings, "DELETE", f"{LINE_RICHMENU_BASE_URL}/{rich_menu_id}")
+        rich_menu_id = None
 
-        content_url = f"https://api-data.line.me/v2/bot/richmenu/{rich_menu_id}/content"
-        image_bytes = _generate_rich_menu_image()
-        response = requests.post(
-            content_url,
-            headers={
-                "Authorization": f"Bearer {settings.channel_access_token}",
-                "Content-Type": "image/png",
+    payload = {
+        "size": {"width": 2500, "height": 1686},
+        "selected": True,
+        "name": rich_menu_name,
+        "chatBarText": "メニュー",
+        "areas": [
+            {
+                "bounds": {"x": 0, "y": 220, "width": 1250, "height": 733},
+                "action": {"type": "message", "text": "メニュー"},
             },
-            data=image_bytes,
-            timeout=20,
+            {
+                "bounds": {"x": 1250, "y": 220, "width": 1250, "height": 733},
+                "action": {"type": "message", "text": "一覧"},
+            },
+            {
+                "bounds": {"x": 0, "y": 953, "width": 1250, "height": 733},
+                "action": {"type": "message", "text": "追加"},
+            },
+            {
+                "bounds": {"x": 1250, "y": 953, "width": 1250, "height": 733},
+                "action": {"type": "message", "text": "削除"},
+            },
+        ],
+    }
+    created = _line_json_request(settings, "POST", LINE_RICHMENU_CREATE_URL, payload)
+    rich_menu_id = created.get("richMenuId")
+    if not rich_menu_id:
+        raise RuntimeError("rich menu作成に失敗しました。")
+
+    content_url = f"https://api-data.line.me/v2/bot/richmenu/{rich_menu_id}/content"
+    image_bytes = _generate_rich_menu_image()
+    response = requests.post(
+        content_url,
+        headers={
+            "Authorization": f"Bearer {settings.channel_access_token}",
+            "Content-Type": "image/png",
+        },
+        data=image_bytes,
+        timeout=20,
+    )
+    if response.status_code >= 300:
+        raise RuntimeError(
+            f"rich menu画像アップロード失敗: status={response.status_code}, body={response.text}"
         )
-        if response.status_code >= 300:
-            raise RuntimeError(
-                f"rich menu画像アップロード失敗: status={response.status_code}, body={response.text}"
-            )
 
     set_default_url = f"https://api.line.me/v2/bot/user/all/richmenu/{rich_menu_id}"
     _line_json_request(settings, "POST", set_default_url)
     print(f"[INFO] rich menu設定完了: {rich_menu_id}")
 
 
-def load_products() -> list[dict[str, Any]]:
+def load_products() -> dict[str, list[dict[str, Any]]]:
     if not PRODUCT_FILE_PATH.exists():
-        return []
+        return {}
     raw = PRODUCT_FILE_PATH.read_text(encoding="utf-8").strip()
     if not raw:
-        return []
+        return {}
     data = json.loads(raw)
-    if not isinstance(data, list):
-        raise ValueError("products.json は配列形式である必要があります。")
+    if isinstance(data, list):
+        # 旧形式(list)から新形式(dict[user_id]=list)へ移行
+        return {"legacy_default": data}
+    if not isinstance(data, dict):
+        raise ValueError("products.json はオブジェクト形式である必要があります。")
+
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    for user_id, products in data.items():
+        if isinstance(user_id, str) and isinstance(products, list):
+            normalized[user_id] = products
+    return normalized
+
+
+def normalize_user_products_map(
+    data: dict[str, list[dict[str, Any]]],
+    default_owner_id: str | None,
+) -> dict[str, list[dict[str, Any]]]:
+    if "legacy_default" in data and default_owner_id and default_owner_id not in data:
+        data[default_owner_id] = data.pop("legacy_default")
     return data
 
 
-def save_products(products: list[dict[str, Any]]) -> None:
+def save_products(products: dict[str, list[dict[str, Any]]]) -> None:
     PRODUCT_FILE_PATH.write_text(
         json.dumps(products, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -307,12 +339,31 @@ def fetch_amazon_price(url: str) -> tuple[int | None, str]:
     return None, "価格要素が見つかりませんでした"
 
 
+def fetch_page_title(url: str) -> str | None:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    response = requests.get(url, headers=headers, timeout=20)
+    if response.status_code != 200:
+        return None
+    soup = BeautifulSoup(response.text, "html.parser")
+    if soup.title and soup.title.text:
+        title = soup.title.text.strip()
+        if title:
+            return title[:100]
+    return None
+
+
 def format_product_line(product: dict[str, Any]) -> str:
     latest = product.get("last_price")
     latest_text = f"{latest:,}円" if isinstance(latest, int) else "不明"
-    target = product.get("target_price")
-    target_text = f"{target:,}円" if isinstance(target, int) else "-"
-    return f"- {product.get('name', 'no-name')}: 現在 {latest_text} / 目標 {target_text}"
+    min_price = product.get("min_price")
+    min_price_text = f"{min_price:,}円" if isinstance(min_price, int) else "-"
+    return f"- {product.get('name', 'no-name')}: 現在 {latest_text} / 最安値 {min_price_text}"
 
 
 def _format_checked_at_text(value: Any) -> str:
@@ -329,26 +380,30 @@ def format_product_card(product: dict[str, Any], index: int | None = None) -> st
     name = str(product.get("name", "no-name"))
     latest = product.get("last_price")
     latest_text = f"{latest:,}円" if isinstance(latest, int) else "不明"
-    target = product.get("target_price")
-    target_text = f"{target:,}円" if isinstance(target, int) else "-"
-    if isinstance(latest, int) and isinstance(target, int):
-        diff = latest - target
-        if diff <= 0:
-            diff_text = f"目標達成 ({abs(diff):,}円安い)"
+    min_price = product.get("min_price")
+    min_price_text = f"{min_price:,}円" if isinstance(min_price, int) else "-"
+    price_diff = product.get("price_diff")
+    if isinstance(price_diff, int):
+        if price_diff > 0:
+            diff_text = f"+{price_diff:,}円"
+        elif price_diff < 0:
+            diff_text = f"-{abs(price_diff):,}円"
         else:
-            diff_text = f"目標まであと {diff:,}円"
+            diff_text = "±0円"
     else:
         diff_text = "-"
     checked_at_text = _format_checked_at_text(product.get("last_checked_at"))
     status_text = str(product.get("last_status", "-"))
+    url_text = str(product.get("url", "-"))
     prefix = f"[{index}] " if isinstance(index, int) else ""
     lines = [
         f"{prefix}{name}",
         f"  現在価格: {latest_text}",
-        f"  目標価格: {target_text}",
-        f"  差分: {diff_text}",
+        f"  登録後最安値: {min_price_text}",
+        f"  前回比: {diff_text}",
         f"  最終確認: {checked_at_text}",
         f"  取得状態: {status_text}",
+        f"  URL: {url_text}",
     ]
     return "\n".join(lines)
 
@@ -370,13 +425,16 @@ def build_menu_message() -> str:
         "1) メニュー",
         "   - この一覧を表示します。",
         "",
-        "2) 一覧",
-        "   - 監視中の商品を一覧表示します。",
+        "2) 一覧 または 価格",
+        "   - 同じ動作です。監視中の商品一覧と価格を表示します。",
         "",
-        "3) 価格",
-        "   - 全商品の最新価格を表示します。",
+        "3) 追加 <商品名> <URL>",
+        "   - 自分の監視リストに商品を追加します。",
+        "   - または「追加」と送信後にURLを送っても追加できます。",
         "",
-        "※商品追加や詳細指定は管理者用の手入力コマンドです。",
+        "4) 削除 <番号 or 商品名>",
+        "   - 自分の監視リストから商品を削除します。",
+        "   - または「削除」と送信後にURLを送っても削除できます。",
     ]
     return "\n".join(lines)[:4900]
 
@@ -394,15 +452,16 @@ def build_report_text(settings: Settings, products: list[dict[str, Any]]) -> str
     return "\n".join(lines)[:4900]
 
 
-def check_price_alert(settings: Settings, product: dict[str, Any], latest_price: int) -> None:
-    target = product.get("target_price")
-    if isinstance(target, int) and latest_price <= target:
+def check_price_alert(settings: Settings, to: str, product: dict[str, Any], latest_price: int) -> None:
+    diff = product.get("price_diff")
+    if isinstance(diff, int) and diff != 0:
+        direction = "値上がり" if diff > 0 else "値下がり"
         text = (
-            f"価格アラート: {product.get('name')}\n"
-            f"現在価格 {latest_price:,}円 が目標価格 {target:,}円 以下になりました。\n"
+            f"価格更新: {product.get('name')}\n"
+            f"現在価格 {latest_price:,}円 ({direction} {abs(diff):,}円)\n"
             f"{product.get('url')}"
         )
-        send_line_push(settings, settings.default_to, text[:4900])
+        send_line_push(settings, to, text[:4900])
 
 
 def refresh_product_price(product: dict[str, Any], now: datetime) -> None:
@@ -412,9 +471,16 @@ def refresh_product_price(product: dict[str, Any], now: datetime) -> None:
         product["last_status"] = status
         if latest_price is not None:
             prev = product.get("last_price")
+            if isinstance(prev, int):
+                product["price_diff"] = latest_price - prev
+            else:
+                product["price_diff"] = None
             product["last_price"] = latest_price
             if prev != latest_price:
                 product["last_changed_at"] = now.isoformat()
+            min_price = product.get("min_price")
+            if not isinstance(min_price, int) or latest_price < min_price:
+                product["min_price"] = latest_price
     except Exception as exc:  # noqa: BLE001
         product["last_checked_at"] = now.isoformat()
         product["last_status"] = f"エラー: {exc}"
@@ -427,28 +493,33 @@ def monitoring_loop(settings: Settings) -> None:
 
     while True:
         now = datetime.now(tz)
-        products = load_products()
+        user_products_map = normalize_user_products_map(
+            load_products(),
+            settings.default_to,
+        )
 
-        for product in products:
-            prev_price = product.get("last_price")
-            refresh_product_price(product, now)
-            latest_price = product.get("last_price")
-            if isinstance(latest_price, int) and latest_price != prev_price:
-                check_price_alert(settings, product, latest_price)
+        for owner_id, products in user_products_map.items():
+            for product in products:
+                prev_price = product.get("last_price")
+                refresh_product_price(product, now)
+                latest_price = product.get("last_price")
+                if isinstance(latest_price, int) and latest_price != prev_price:
+                    check_price_alert(settings, owner_id, product, latest_price)
 
-        save_products(products)
+        save_products(user_products_map)
 
         if now.strftime("%H:%M") == settings.send_time and last_daily_sent_date != now.date():
-            try:
-                send_line_push(
-                    settings,
-                    settings.default_to,
-                    build_report_text(settings, products),
-                )
-                last_daily_sent_date = now.date()
-                print(f"[SUCCESS] {now.isoformat()} 日次レポート送信完了")
-            except Exception as exc:  # noqa: BLE001
-                print(f"[ERROR] {now.isoformat()} 日次送信エラー: {exc}")
+            for owner_id, products in user_products_map.items():
+                try:
+                    send_line_push(
+                        settings,
+                        owner_id,
+                        build_report_text(settings, products),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ERROR] {now.isoformat()} 日次送信エラー owner={owner_id}: {exc}")
+            last_daily_sent_date = now.date()
+            print(f"[SUCCESS] {now.isoformat()} 日次レポート送信完了")
 
         time.sleep(settings.monitor_interval_seconds)
 
@@ -463,71 +534,133 @@ def verify_line_signature(channel_secret: str, body: bytes, x_line_signature: st
     return hmac.compare_digest(expected, x_line_signature)
 
 
-def handle_command(text: str) -> str:
-    products = load_products()
+def get_owner_id_from_event(event: dict[str, Any]) -> str:
+    source = event.get("source", {})
+    for key in ("userId", "groupId", "roomId"):
+        value = source.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "legacy_default"
+
+
+def get_user_products_map() -> dict[str, list[dict[str, Any]]]:
+    data = load_products()
+    default_owner_id = settings_cache.default_to if settings_cache else None
+    return normalize_user_products_map(data, default_owner_id)
+
+
+def handle_command(text: str, owner_id: str) -> str:
+    user_products_map = get_user_products_map()
+    products = user_products_map.get(owner_id, [])
     now = datetime.now()
-    parts = text.strip().split(maxsplit=3)
+    plain_text = text.strip()
+    parts = plain_text.split(maxsplit=3)
     if not parts:
         return build_menu_message()
+
+    if pending_actions.get(owner_id) in {"add_waiting_url", "delete_waiting_url"}:
+        if plain_text.startswith("http://") or plain_text.startswith("https://"):
+            action = pending_actions.pop(owner_id)
+            if action == "add_waiting_url":
+                title = fetch_page_title(plain_text) or f"商品{len(products) + 1}"
+                products.append(
+                    {
+                        "name": title,
+                        "url": plain_text,
+                        "last_price": None,
+                        "min_price": None,
+                        "price_diff": None,
+                        "last_status": "未確認",
+                        "last_checked_at": None,
+                        "last_changed_at": None,
+                    }
+                )
+                user_products_map[owner_id] = products
+                save_products(user_products_map)
+                return f"商品を追加しました: {title}"
+
+            removed = None
+            for i, product in enumerate(products):
+                if str(product.get("url", "")).strip() == plain_text:
+                    removed = products.pop(i)
+                    break
+            if not removed:
+                return "一致するURLの商品が見つかりませんでした。削除をやり直す場合は「削除」と送ってください。"
+            user_products_map[owner_id] = products
+            save_products(user_products_map)
+            return f"商品を削除しました: {removed.get('name', 'no-name')}"
+        return "URL形式で送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX"
 
     cmd = parts[0]
     if cmd in {"メニュー", "ﾒﾆｭｰ", "ヘルプ", "help", "Help", "HELP"}:
         return build_menu_message()
 
-    if cmd == "一覧":
-        return build_product_list_message("監視中の商品一覧", products)
-
-    if cmd == "価格":
-        if len(parts) == 1:
-            if not products:
-                return "監視中の商品はありません。"
-            changed = False
-            for product in products:
-                if not isinstance(product.get("last_price"), int):
-                    refresh_product_price(product, now)
-                    changed = True
-            if changed:
-                save_products(products)
-            return build_product_list_message("価格一覧", products)
-
-        keyword = parts[1].lower()
-        filtered = [p for p in products if keyword in str(p.get("name", "")).lower()]
-        if not filtered:
-            return f"'{parts[1]}' に一致する商品がありません。"
+    if cmd in {"一覧", "価格"}:
+        if not products:
+            return "監視中の商品はありません。"
         changed = False
-        for product in filtered:
+        for product in products:
             if not isinstance(product.get("last_price"), int):
                 refresh_product_price(product, now)
                 changed = True
         if changed:
-            save_products(products)
-        return build_product_list_message(f"価格一覧 (キーワード: {parts[1]})", filtered)
+            user_products_map[owner_id] = products
+            save_products(user_products_map)
+        return build_product_list_message("監視中の商品一覧", products)
 
     if cmd == "追加":
+        if len(parts) == 1:
+            pending_actions[owner_id] = "add_waiting_url"
+            return "追加したい商品のURLを送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX"
         if len(parts) < 3:
-            return "使い方: 追加 商品名 URL [目標価格]"
+            return "使い方: 追加 商品名 URL"
 
         name = parts[1]
         url = parts[2]
-        target_price = None
-        if len(parts) >= 4:
-            target_price = parse_price_to_int(parts[3])
-            if target_price is None:
-                return "目標価格は数値で指定してください。例: 10000"
 
         products.append(
             {
                 "name": name,
                 "url": url,
-                "target_price": target_price,
                 "last_price": None,
+                "min_price": None,
+                "price_diff": None,
                 "last_status": "未確認",
                 "last_checked_at": None,
                 "last_changed_at": None,
             }
         )
-        save_products(products)
+        user_products_map[owner_id] = products
+        save_products(user_products_map)
         return f"商品を追加しました: {name}"
+
+    if cmd == "削除":
+        if len(parts) == 1:
+            pending_actions[owner_id] = "delete_waiting_url"
+            return "削除したい商品のURLを送ってください。"
+        if len(parts) < 2:
+            return "使い方: 削除 <番号 or 商品名>"
+        if not products:
+            return "監視中の商品はありません。"
+
+        key = parts[1]
+        removed = None
+        if key.isdigit():
+            idx = int(key) - 1
+            if 0 <= idx < len(products):
+                removed = products.pop(idx)
+        else:
+            for i, product in enumerate(products):
+                if str(product.get("name", "")).lower() == key.lower():
+                    removed = products.pop(i)
+                    break
+
+        if not removed:
+            return f"削除対象が見つかりませんでした: {key}"
+
+        user_products_map[owner_id] = products
+        save_products(user_products_map)
+        return f"商品を削除しました: {removed.get('name', 'no-name')}"
 
     return "不明なコマンドです。\n\n" + build_menu_message()
 
@@ -555,7 +688,8 @@ def create_app(settings: Settings) -> Flask:
                 continue
             reply_token = event.get("replyToken")
             text = str(message.get("text", ""))
-            reply = handle_command(text)
+            owner_id = get_owner_id_from_event(event)
+            reply = handle_command(text, owner_id)
             if reply_token:
                 send_line_reply(settings, reply_token, reply)
 
@@ -567,7 +701,7 @@ def create_app(settings: Settings) -> Flask:
 def ensure_product_file() -> None:
     if PRODUCT_FILE_PATH.exists():
         return
-    save_products([])
+    save_products({})
 
 
 def start_background_services(settings: Settings) -> None:
@@ -591,6 +725,8 @@ def start_background_services(settings: Settings) -> None:
 
 def create_app_for_gunicorn() -> Flask:
     settings = load_settings()
+    global settings_cache
+    settings_cache = settings
     start_background_services(settings)
     return create_app(settings)
 
@@ -598,6 +734,8 @@ def create_app_for_gunicorn() -> Flask:
 def main() -> None:
     try:
         settings = load_settings()
+        global settings_cache
+        settings_cache = settings
         start_background_services(settings)
 
         app = create_app(settings)
