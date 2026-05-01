@@ -176,11 +176,27 @@ def _generate_rich_menu_image() -> bytes:
     width, height = 2500, 1686
     image = Image.new("RGB", (width, height), color=(20, 93, 160))
     draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
+    title_font = ImageFont.load_default()
+    button_font = ImageFont.load_default()
+
+    # 環境に日本語フォントがあれば優先利用し、ボタン文字を見やすくする。
+    font_candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+    ]
+    for font_path in font_candidates:
+        try:
+            title_font = ImageFont.truetype(font_path, 86)
+            button_font = ImageFont.truetype(font_path, 110)
+            break
+        except OSError:
+            continue
 
     title = "Amazon 価格チェック"
     draw.rectangle([(0, 0), (width, 220)], fill=(13, 63, 110))
-    draw.text((80, 85), title, fill=(255, 255, 255), font=font)
+    draw.text((80, 60), title, fill=(255, 255, 255), font=title_font)
 
     top = 220
     cell_w = width // 2
@@ -193,7 +209,13 @@ def _generate_rich_menu_image() -> bytes:
         y1 = y0 + cell_h
         fill = (42, 128, 196) if (col + row) % 2 == 0 else (34, 116, 180)
         draw.rectangle([(x0, y0), (x1, y1)], fill=fill)
-        draw.text((x0 + 120, y0 + cell_h // 2 - 10), label, fill=(255, 255, 255), font=font)
+        draw.rectangle([(x0, y0), (x1, y1)], outline=(255, 255, 255), width=5)
+        text_bbox = draw.textbbox((0, 0), label, font=button_font)
+        text_w = text_bbox[2] - text_bbox[0]
+        text_h = text_bbox[3] - text_bbox[1]
+        tx = x0 + (cell_w - text_w) // 2
+        ty = y0 + (cell_h - text_h) // 2
+        draw.text((tx, ty), label, fill=(255, 255, 255), font=button_font)
 
     buf = BytesIO()
     image.save(buf, format="PNG")
