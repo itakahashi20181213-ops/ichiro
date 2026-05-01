@@ -362,6 +362,38 @@ def parse_price_to_int(text: str) -> int | None:
     return int(digits)
 
 
+def normalize_amazon_url(url: str) -> str:
+    raw = url.strip()
+    if not raw:
+        return raw
+
+    # 短縮URLは最終遷移先を解決してからASIN抽出する
+    expanded = raw
+    try:
+        if "amzn.asia/" in raw or "a.co/" in raw:
+            response = requests.get(raw, allow_redirects=True, timeout=15)
+            expanded = response.url or raw
+    except requests.RequestException:
+        expanded = raw
+
+    patterns = [
+        r"/dp/([A-Z0-9]{10})",
+        r"/gp/product/([A-Z0-9]{10})",
+        r"/product/([A-Z0-9]{10})",
+    ]
+    upper_url = expanded.upper()
+    asin = None
+    for pattern in patterns:
+        match = re.search(pattern, upper_url)
+        if match:
+            asin = match.group(1)
+            break
+
+    if asin:
+        return f"https://www.amazon.co.jp/dp/{asin}"
+    return expanded
+
+
 def _extract_price_from_json_ld(soup: BeautifulSoup) -> int | None:
     scripts = soup.select('script[type="application/ld+json"]')
     for script in scripts:
@@ -401,6 +433,18 @@ def _extract_price_from_meta(soup: BeautifulSoup) -> int | None:
     return None
 
 
+def _is_strikethrough_price(node: Any) -> bool:
+    current = node
+    for _ in range(5):
+        if not current:
+            break
+        classes = current.get("class", []) if hasattr(current, "get") else []
+        if isinstance(classes, list) and "a-text-price" in classes:
+            return True
+        current = getattr(current, "parent", None)
+    return False
+
+
 def fetch_amazon_price(url: str) -> tuple[int | None, str]:
     headers = {
         "User-Agent": (
@@ -424,30 +468,40 @@ def fetch_amazon_price(url: str) -> tuple[int | None, str]:
 
             soup = BeautifulSoup(html, "html.parser")
             selectors = [
+                "#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen",
+                "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
+                "#corePrice_feature_div .priceToPay .a-offscreen",
+                "#corePrice_feature_div .a-price .a-offscreen",
                 "#priceblock_dealprice",
                 "#priceblock_ourprice",
                 "#priceblock_saleprice",
-                "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
-                "#corePrice_feature_div .a-price .a-offscreen",
-                ".a-price.a-text-price .a-offscreen",
+                "#apex_desktop .a-price .a-offscreen",
                 ".a-price .a-offscreen",
             ]
             for selector in selectors:
-                node = soup.select_one(selector)
-                if node and node.text:
-                    price = parse_price_to_int(node.text)
-                    if price is not None:
+                nodes = soup.select(selector)
+                for node in nodes:
+                    text = node.text if node else ""
+                    if not text:
+                        continue
+                    if _is_strikethrough_price(node):
+                        continue
+                    # 参考価格などの打ち消し表示を誤取得しにくくする
+                    if "参考" in text:
+                        continue
+                    price = parse_price_to_int(text)
+                    if price is not None and 100 <= price <= 10_000_000:
                         return price, "OK"
 
             # whole/fraction形式の価格にも対応
             whole = soup.select_one(".a-price-whole")
-            frac = soup.select_one(".a-price-fraction")
             if whole and whole.text:
                 whole_digits = re.sub(r"[^\d]", "", whole.text)
-                frac_digits = re.sub(r"[^\d]", "", frac.text if frac else "")
-                composed = whole_digits + (frac_digits[:2] if frac_digits else "")
-                if composed:
-                    return int(composed), "OK"
+                # JPY表示では小数は基本不要。fractionを結合すると桁ずれの原因になる。
+                if whole_digits:
+                    value = int(whole_digits)
+                    if 100 <= value <= 10_000_000:
+                        return value, "OK(whole)"
 
             json_ld_price = _extract_price_from_json_ld(soup)
             if json_ld_price is not None:
@@ -708,11 +762,12 @@ def handle_command(text: str, owner_id: str) -> str:
             action = str(pending.get("action"))
             pending_actions.pop(owner_id, None)
             if action == "add_waiting_url":
-                title = fetch_page_title(plain_text) or f"商品{len(products) + 1}"
+                normalized_url = normalize_amazon_url(plain_text)
+                title = fetch_page_title(normalized_url) or f"商品{len(products) + 1}"
                 products.append(
                     {
                         "name": title,
-                        "url": plain_text,
+                        "url": normalized_url,
                         "last_price": None,
                         "min_price": None,
                         "price_diff": None,
@@ -726,8 +781,10 @@ def handle_command(text: str, owner_id: str) -> str:
                 return f"商品を追加しました: {title}"
 
             removed = None
+            normalized_input_url = normalize_amazon_url(plain_text)
             for i, product in enumerate(products):
-                if str(product.get("url", "")).strip() == plain_text:
+                stored_url = normalize_amazon_url(str(product.get("url", "")).strip())
+                if stored_url == normalized_input_url:
                     removed = products.pop(i)
                     break
             if not removed:
@@ -770,7 +827,7 @@ def handle_command(text: str, owner_id: str) -> str:
             return "使い方: 追加 商品名 URL"
 
         name = parts[1]
-        url = parts[2]
+        url = normalize_amazon_url(parts[2])
 
         products.append(
             {
