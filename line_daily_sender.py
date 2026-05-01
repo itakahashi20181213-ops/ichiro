@@ -611,6 +611,14 @@ def handle_command(text: str, owner_id: str) -> str:
     if not parts:
         return build_menu_message()
 
+    cmd = parts[0]
+    # キャンセルは常に最優先で即時反映する
+    if cmd in {"キャンセル", "cancel", "CANCEL", "Cancel"}:
+        if owner_id in pending_actions:
+            pending_actions.pop(owner_id, None)
+            return "入力待ちをキャンセルしました。"
+        return "キャンセルする入力待ちはありません。"
+
     pending = pending_actions.get(owner_id)
     if pending:
         started_at = pending.get("started_at")
@@ -654,13 +662,6 @@ def handle_command(text: str, owner_id: str) -> str:
             "URL形式で送ってください。例: https://www.amazon.co.jp/dp/XXXXXXXXXX\n"
             "入力待ちは3分で自動キャンセルされます。"
         )
-
-    cmd = parts[0]
-    if cmd in {"キャンセル", "cancel", "CANCEL", "Cancel"}:
-        if owner_id in pending_actions:
-            pending_actions.pop(owner_id, None)
-            return "入力待ちをキャンセルしました。"
-        return "キャンセルする入力待ちはありません。"
 
     if cmd in {"メニュー", "ﾒﾆｭｰ", "ヘルプ", "help", "Help", "HELP"}:
         return build_menu_message()
