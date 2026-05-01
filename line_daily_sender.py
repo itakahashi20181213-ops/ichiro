@@ -452,6 +452,8 @@ def fetch_amazon_price(url: str) -> tuple[int | None, str]:
             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
         "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
     last_error = "価格要素が見つかりませんでした"
     for attempt in range(3):
@@ -552,6 +554,10 @@ def _format_checked_at_text(value: Any) -> str:
         return "-"
     try:
         dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            # 旧データなどでタイムゾーンなしの場合はUTCとして扱う
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(_get_timezone("Asia/Tokyo"))
         return dt.strftime("%m/%d %H:%M")
     except ValueError:
         return value
@@ -733,10 +739,16 @@ def get_user_products_map() -> dict[str, list[dict[str, Any]]]:
     return normalize_user_products_map(data, default_owner_id)
 
 
+def get_now_for_runtime() -> datetime:
+    if settings_cache:
+        return datetime.now(_get_timezone(settings_cache.timezone))
+    return datetime.now(_get_timezone("Asia/Tokyo"))
+
+
 def handle_command(text: str, owner_id: str) -> str:
     user_products_map = get_user_products_map()
     products = user_products_map.get(owner_id, [])
-    now = datetime.now()
+    now = get_now_for_runtime()
     plain_text = text.strip()
     parts = plain_text.split(maxsplit=3)
     if not parts:
@@ -803,14 +815,11 @@ def handle_command(text: str, owner_id: str) -> str:
     if cmd in {"一覧", "価格"}:
         if not products:
             return "監視中の商品はありません。"
-        changed = False
         for product in products:
-            if not isinstance(product.get("last_price"), int):
-                refresh_product_price(product, now)
-                changed = True
-        if changed:
-            user_products_map[owner_id] = products
-            save_products(user_products_map)
+            # 一覧表示時は常に最新化して、価格と最終確認時刻のズレを減らす
+            refresh_product_price(product, now)
+        user_products_map[owner_id] = products
+        save_products(user_products_map)
         return build_product_list_message("監視中の商品一覧", products)
 
     if cmd == "追加":
