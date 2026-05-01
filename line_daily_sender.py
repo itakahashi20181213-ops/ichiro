@@ -176,57 +176,60 @@ def _generate_rich_menu_image() -> bytes:
     width, height = 2500, 1686
     image = Image.new("RGB", (width, height), color=(20, 93, 160))
     draw = ImageDraw.Draw(image)
+
     title_font = ImageFont.load_default()
-    button_font = ImageFont.load_default()
-    japanese_font_available = False
-
-    # 環境に日本語フォントがあれば優先利用し、ボタン文字を見やすくする。
-    font_candidates = [
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "C:/Windows/Fonts/msgothic.ttc",
-        "C:/Windows/Fonts/meiryo.ttc",
-    ]
-    for font_path in font_candidates:
-        try:
-            title_font = ImageFont.truetype(font_path, 86)
-            button_font = ImageFont.truetype(font_path, 110)
-            japanese_font_available = True
-            break
-        except OSError:
-            continue
-
-    title = "Amazon 価格チェック"
+    title = "Amazon Price Monitor"
     draw.rectangle([(0, 0), (width, 220)], fill=(13, 63, 110))
     draw.text((80, 60), title, fill=(255, 255, 255), font=title_font)
 
     top = 220
     cell_w = width // 2
     cell_h = (height - top) // 2
-    labels = [("メニュー", "MENU", 0, 0), ("一覧", "LIST", 1, 0), ("追加", "ADD", 0, 1), ("削除", "DELETE", 1, 1)]
+    labels = [("MENU", 0, 0), ("LIST", 1, 0), ("ADD", 0, 1), ("DELETE", 1, 1)]
 
-    def draw_big_ascii_label(text: str, x0: int, y0: int, w: int, h: int) -> None:
-        base = Image.new("L", (1000, 260), 0)
-        base_draw = ImageDraw.Draw(base)
-        fallback_font = ImageFont.load_default()
-        bbox = base_draw.textbbox((0, 0), text, font=fallback_font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        tx = (1000 - tw) // 2
-        ty = (260 - th) // 2
-        base_draw.text((tx, ty), text, fill=255, font=fallback_font)
-        # ビットマップを大きく拡大して、フォントが無くても視認性を確保する
-        target_w = max(700, min(w - 120, 1500))
-        target_h = max(280, min(h - 180, 520))
-        scaled = base.resize((target_w, target_h), Image.Resampling.NEAREST)
-        sx = x0 + (w - scaled.width) // 2
-        sy = y0 + (h - scaled.height) // 2
-        # 太く見えるよう1pxずらして重ねる
-        image.paste((255, 255, 255), (sx, sy), scaled)
-        image.paste((255, 255, 255), (sx + 1, sy), scaled)
-        image.paste((255, 255, 255), (sx, sy + 1), scaled)
+    # 5x7ブロックフォント（環境依存なし）
+    glyphs: dict[str, list[str]] = {
+        "A": ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+        "D": ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+        "E": ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+        "I": ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+        "L": ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+        "M": ["10001", "11011", "10101", "10001", "10001", "10001", "10001"],
+        "N": ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+        "S": ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+        "T": ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+        "U": ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+    }
 
-    for jp_label, en_label, col, row in labels:
+    def draw_block_text(text: str, x0: int, y0: int, w: int, h: int) -> None:
+        rows = 7
+        cols = sum(6 for ch in text if ch in glyphs) - 1
+        if cols <= 0:
+            return
+        scale = min((w - 140) // cols, (h - 160) // rows)
+        scale = max(20, scale)
+        text_w = cols * scale
+        text_h = rows * scale
+        sx = x0 + (w - text_w) // 2
+        sy = y0 + (h - text_h) // 2
+
+        cursor = sx
+        for ch in text:
+            pattern = glyphs.get(ch)
+            if not pattern:
+                continue
+            for r, row_bits in enumerate(pattern):
+                for c, bit in enumerate(row_bits):
+                    if bit == "1":
+                        px0 = cursor + c * scale
+                        py0 = sy + r * scale
+                        draw.rectangle(
+                            [(px0, py0), (px0 + scale - 2, py0 + scale - 2)],
+                            fill=(255, 255, 255),
+                        )
+            cursor += 6 * scale
+
+    for en_label, col, row in labels:
         x0 = col * cell_w
         y0 = top + row * cell_h
         x1 = x0 + cell_w
@@ -234,15 +237,7 @@ def _generate_rich_menu_image() -> bytes:
         fill = (42, 128, 196) if (col + row) % 2 == 0 else (34, 116, 180)
         draw.rectangle([(x0, y0), (x1, y1)], fill=fill)
         draw.rectangle([(x0, y0), (x1, y1)], outline=(255, 255, 255), width=5)
-        if japanese_font_available:
-            text_bbox = draw.textbbox((0, 0), jp_label, font=button_font)
-            text_w = text_bbox[2] - text_bbox[0]
-            text_h = text_bbox[3] - text_bbox[1]
-            tx = x0 + (cell_w - text_w) // 2
-            ty = y0 + (cell_h - text_h) // 2
-            draw.text((tx, ty), jp_label, fill=(255, 255, 255), font=button_font)
-        else:
-            draw_big_ascii_label(en_label, x0, y0, cell_w, cell_h)
+        draw_block_text(en_label, x0, y0, cell_w, cell_h)
 
     buf = BytesIO()
     image.save(buf, format="PNG")
