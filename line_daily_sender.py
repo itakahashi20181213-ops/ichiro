@@ -178,6 +178,7 @@ def _generate_rich_menu_image() -> bytes:
     draw = ImageDraw.Draw(image)
     title_font = ImageFont.load_default()
     button_font = ImageFont.load_default()
+    japanese_font_available = False
 
     # 環境に日本語フォントがあれば優先利用し、ボタン文字を見やすくする。
     font_candidates = [
@@ -190,6 +191,7 @@ def _generate_rich_menu_image() -> bytes:
         try:
             title_font = ImageFont.truetype(font_path, 86)
             button_font = ImageFont.truetype(font_path, 110)
+            japanese_font_available = True
             break
         except OSError:
             continue
@@ -201,8 +203,25 @@ def _generate_rich_menu_image() -> bytes:
     top = 220
     cell_w = width // 2
     cell_h = (height - top) // 2
-    labels = [("メニュー", 0, 0), ("一覧", 1, 0), ("追加", 0, 1), ("削除", 1, 1)]
-    for label, col, row in labels:
+    labels = [("メニュー", "MENU", 0, 0), ("一覧", "LIST", 1, 0), ("追加", "ADD", 0, 1), ("削除", "DELETE", 1, 1)]
+
+    def draw_big_ascii_label(text: str, x0: int, y0: int, w: int, h: int) -> None:
+        base = Image.new("L", (600, 180), 0)
+        base_draw = ImageDraw.Draw(base)
+        fallback_font = ImageFont.load_default()
+        bbox = base_draw.textbbox((0, 0), text, font=fallback_font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = (600 - tw) // 2
+        ty = (180 - th) // 2
+        base_draw.text((tx, ty), text, fill=255, font=fallback_font)
+        # ビットマップを拡大して、フォントが無くても視認性を確保する
+        scaled = base.resize((min(w - 120, 1500), 220), Image.Resampling.NEAREST)
+        sx = x0 + (w - scaled.width) // 2
+        sy = y0 + (h - scaled.height) // 2
+        image.paste((255, 255, 255), (sx, sy), scaled)
+
+    for jp_label, en_label, col, row in labels:
         x0 = col * cell_w
         y0 = top + row * cell_h
         x1 = x0 + cell_w
@@ -210,12 +229,15 @@ def _generate_rich_menu_image() -> bytes:
         fill = (42, 128, 196) if (col + row) % 2 == 0 else (34, 116, 180)
         draw.rectangle([(x0, y0), (x1, y1)], fill=fill)
         draw.rectangle([(x0, y0), (x1, y1)], outline=(255, 255, 255), width=5)
-        text_bbox = draw.textbbox((0, 0), label, font=button_font)
-        text_w = text_bbox[2] - text_bbox[0]
-        text_h = text_bbox[3] - text_bbox[1]
-        tx = x0 + (cell_w - text_w) // 2
-        ty = y0 + (cell_h - text_h) // 2
-        draw.text((tx, ty), label, fill=(255, 255, 255), font=button_font)
+        if japanese_font_available:
+            text_bbox = draw.textbbox((0, 0), jp_label, font=button_font)
+            text_w = text_bbox[2] - text_bbox[0]
+            text_h = text_bbox[3] - text_bbox[1]
+            tx = x0 + (cell_w - text_w) // 2
+            ty = y0 + (cell_h - text_h) // 2
+            draw.text((tx, ty), jp_label, fill=(255, 255, 255), font=button_font)
+        else:
+            draw_big_ascii_label(en_label, x0, y0, cell_w, cell_h)
 
     buf = BytesIO()
     image.save(buf, format="PNG")
